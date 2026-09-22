@@ -1,0 +1,673 @@
+2026 Working Note on Jev Engineering Practice                                                                                                                   September 2026
+
+
+
+
+                 JEV ENGINEERING
+                FOR CODING AGENTS
+                      The TypeSafe Founder's Blueprint for Building with Jev
+                              A Synthesis for Study · Based on design notes by Diogo Almeida (TypeSafe)
+                          Independently compiled, September 2026. Not affiliated with or endorsed by TypeSafe
+
+
+
+                                            Explicit State                                              Jev Decisions
+
+
+                                    Tool calls               Reasoning                            Chunk                      Cache
+                                                                                                  scoring                    reuse?
+
+
+                                   User turns               AGENTS.md                              Route                      Pick
+                                                                                                   model                      tool
+                                                               Cached
+                                   Diffs + files
+                                                                prefix
+                                                                                                               Permit
+                                                                                                              command
+                                                                                                                                                     Frontier
+                                              Chunk store
+                                             addressable · typed
+                                                                                                                                                       LLM
+                                                                                                     typed answers + probabilities
+
+
+                                                                                                                                                    Sub-agent
+                                                                                                                                                     models
+                                                                             Context
+                                                                                                                 Router
+                                                                            Assembly
+                                                                                                                                           olicy   Cheap / open
+                                                                                                                                     rity p
+                                                                                                                                 secu                models
+
+            User
+                                                                                                                                                   Background
+                                                                                       Runtime                                                      reviewers
+
+
+                               100s of tools · snippets first, schema on demand
+
+
+
+                                   grep          ast-grep          tests        git       …         headroom          rtk             fff
+                                                                                                                                                     LLMs
+
+
+
+                                                                           Jev Harness
+
+
+
+                                                 …                                                                     …
+
+                                                                   Repo · files · test logs · git history
+
+
+
+Fig. 1. The Jev harness. Explicit state (left) is stored as addressable, typed chunks. Jev (right) answers the per-turn questions: which chunks to show, wheth‐
+er to reuse the cache, which model and tool to use, and whether a command may run. Context Assembly and the Router feed the Runtime, which calls hun‐
+              dreds of tools disclosed snippet-first and routes work to frontier, sub-agent, cheap, or background models under a security policy.
+
+Abstract—Coding agents are surprisingly simple. Most are a                                                  rent agents inherit without examination: routing that loses
+while loop around a model with a small number of tools, and                                                 money, tool calling that crowds the context, compaction that
+there has been little meaningful innovation outside the model                                               compresses blind, sub-agents that rarely fire, restarts that dis‐
+itself. This note synthesizes design notes by Diogo Almeida,                                                card state, and the batteries debate. We present the alternative
+founder of TypeSafe, on building a coding agent around Jev,                                                 architecture the notes propose: a harness built around explicit,
+TypeSafe's decision-making model that converts structured                                                   typed state, with Jev making the per-turn decisions, where
+state into typed outputs such as choices, scores, and noul de‐                                              every chunk of context is scored per query, routing is priced
+cisions. The notes start from one provocative question: how                                                 including reprocessing cost, tools are disclosed in tiers, in‐
+would you design a coding agent if language models had no                                                   structions load conditionally, and read-only background tasks
+KV cache? The question exposes six design choices that cur‐                                                 share one retrieval pass. We work through the routing arith‐
+metic, the token economics of real agent sessions, and the se‐
+                                                                         leverage is. The leverage is in what the loop
+curity case for routing by file sensitivity rather than difficulty
+alone.                                                                   feeds the model each time it turns.
+   Index Terms—Jev, TypeSafe, coding agents, harness en‐
+                                                                           A. Where Jev Sits
+gineering, KV cache, context engineering, model routing, sub-
+agents, tool calling, compaction, AGENTS.md, background                  Jev is not the model that writes the code. It is the
+agents.                                                                  decision layer beside it. The harness hands Jev
+                                                                         the current application state (goal, context, rules,
+                I. WHY YET ANOTHER AGENT                                 available actions, previous actions) together with
+
+The notes open with four working assumptions.                            a predefined question, and Jev returns a typed an‐
+
+First, coding agents are simple, especially the                          swer: a choice, a score, or a noul decision, each
+
+agentic part: a loop, a model, a handful of tools.                       with a probability. Frontier models, sub-agents,
+
+Second, the best parts of existing agents can be                         tools, and deterministic code then do the actual
+
+reused. The frontier models are all available                            work. Because the output is typed rather than
+
+through APIs, open-source projects provide in‐                           free-form, the harness can validate it, apply
+
+spiration and even UI components, and only a                             thresholds, and branch on it without parsing
+
+few areas, such as authentication for MCP serv‐                          prose.
+
+ers, carry real complexity. Third, the cost advant‐                        Every native feature in this note is, underneath,
+age of first-party agents may be shrinking, as us‐                       a Jev question asked at a high-frequency decision
+age drifts toward pay-as-you-go API pricing                              point. Which chunks should the next turn see?
+rather than bundled subscriptions. Fourth, and                           Should this subtask leave the frontier model?
+most important, some capabilities can only be                            Which tool matches this intent? Should this com‐
+built natively. They cannot be delivered as a plu‐                       mand run? Asked thousands of times per session,
+gin to someone else's agent, because they require                        those small decisions are where the notes locate
+control over how context is assembled on every                           the leverage.
+turn.
+
+   That fourth assumption is the thesis. If an
+agent is just a loop, the loop is not where the
+
+
+
+
+                                                                     2
+                          TABLE I
+             THE JEv QuEsTIONs IN A COdING AGENT                      in practice. The notes call this the tyranny of the
+ Decision   Question to Jev                 Typed answer              KV cache.
+ point
+
+ Context    How visible should this         choice: hide /
+            chunk be for this query?        short / long / full
+                                                                                     II. sIX sYMPTOMs OF THE Kv CACHE
+ Cache      Reuse the cached prefix or      noul + probability
+            rebuild?                                                                                  TABLE II
+                                                                                      sIX dEsIGN CHOICEs CuRRENT AGENTs INHERIT
+ Routing    Can this subtask leave the      choice + cost es‐
+            frontier model?                 timate
+                                                                       Symptom          Why it exists                What it costs
+ Tools      Which tool fits this intent?    ranked choice, top-
+                                            k                          1. Routing       Handing back to the          Mixed routes cost
+                                                                       fails            large model reprocesses      more than pure fronti‐
+ Permis‐    Should this command run?        allow / ask / deny                          context                      er
+ sions
+                                                                       2. Tools         Schemas must sit in the      Tokens spent on irrel‐
+ Security   Which files will this task      sensitivity score          crowd con‐       system message               evant tools; weaker
+            touch?                                                     text                                          selection
+
+                                                                       3. Compac‐       One shared state as‐         Query-blind compres‐
+  B. The Question That Organizes Everything                            tion             sumed for all future         sion loses what mat‐
+                                                                                        turns                        ters later
+The notes describe a favorite question to put to                       4. Sub-          Choosing what context        Little automatic paral‐
+                                                                       agents are       to pass in and merge         lelism
+other engineers: how would you design a coding                         rare             back is hard
+
+                                                                       5. Restarts      Stateful transcripts cor‐    Relevant old state dis‐
+agent if LLMs had no KV cache? The KV cache                                             rupt over time               carded with the bad
+
+is the reason agents are built as append-only tran‐                    6. Batteries     Every built-in costs per‐    Forced choice
+                                                                       debate           manent context               between ease and
+                                                                                                                     power
+scripts. Reusing a cached prefix is cheap; chan‐
+ging anything early in the context invalidates the                      A. Routing Does Not Work
+
+cache and forces the model to reprocess                               The intuitive plan is to let a frontier model plan,
+everything after the change. That single econom‐                      hand execution to a cheaper model, and bring the
+ic fact shapes almost every design decision in                        frontier model back to review. The notes run the
+current agents, usually without anyone stating it.                    numbers using list prices of $5 input and $25 out‐
+                                                                      put per million tokens for Opus, and $3 and $15
+  Imagining the cache away does two things. It
+                                                                      for Sonnet. Let X be context tokens, Y generated
+permits a state-explicit design built for Jev, where
+                                                                      output tokens, and Z additional tokens read dur‐
+context is assembled rather than accumulated.
+                                                                      ing the work, such as command output and file
+And it reveals why ideas that feel intuitively cor‐
+                                                                      reads.
+rect, like routing easy work to a cheap model, fail
+
+
+
+
+                                                                  3
+  Path 1 pure Opus                                                                                     not force the frontier model to reread everything
+    generate 25·Y
+    read      5·Z                                                                                      the helper produced.
+    total    25Y + 5Z
+
+  Path 2 Opus → Sonnet → Opus                                                                            B. Tool Calling Is a Weird Tradeoff
+    Sonnet loads context       3·X
+    Sonnet generates          15·Y                                                                     Tools must be declared up front in the system
+    Sonnet reads               3·Z
+    Opus reloads what changed  5·(Y+Z)                                                                 message, with their full argument schemas,
+    total     3X + 20Y + 8Z
+
+                                                                                                       whether or not they are relevant to the current
+   Path 2 is more expensive whenever the session
+                                                                                                       turn. This consumes a large share of context and,
+is long (large X), whenever the work reads sub‐
+                                                                                                       in the notes' assessment, does not produce espe‐
+stantially more than it writes, or some combina‐
+                                                                                                       cially smart tool selection. The working hypo‐
+tion of the two. Plugging in a plausible session
+                                                                                                       thesis is that models struggle with some combin‐
+shape of X = 0.65, Y = 0.12, Z = 0.23 gives 4.15
+                                                                                                       ation of high cardinality (many tools at once) and
+for pure Opus against 6.19 for the routed path.
+                                                                                                       off-policy tool calling (tools whose usage pat‐
+Staying on the frontier model costs roughly two
+                                                                                                       terns differ from what the model saw in training).
+thirds as much as the route that was supposed to
+                                                                                                       This may be part of why skills, which load a
+save money.
+                                                                                                       short description and defer detail, often outper‐
+             6
+                                                                  6.19
+
+                                                                               Sonnet reads 0.69
+                                                                                                       form raw tool lists and MCP servers.
+                          4.15
+             4                                                                 Opus reload 1.75
+
+                                                                                                         C. Compaction Exists
+             2                                                                 Sonnet gen 1.80
+
+
+
+
+                                                                               load 1.95
+                                                                                                       Compaction makes perfect sense if every future
+             0
+                        Pure Opus                       Opus → Sonnet → Opus
+
+                             relative cost per session, X=0.65 Y=0.12 Z=0.23                           turn wants the same shared state. The notes ques‐
+Fig. 2. The routing trap. Delegating execution to the cheaper model adds a                             tion that assumption. Compaction attempts gen‐
+context load on the way down and a reprocessing pass on the way back,
+which together outweigh the per-token discount.
+                                                                                                       eric compression, which is hard and lossy.
+   The lesson is not that routing is wrong. It is                                                      Query-aware compression is far easier: if you
+that routing priced per token, rather than per con‐                                                    know what the next question is, you know what
+text rebuild, is wrong. Routing becomes viable                                                         to keep. A summary written before the question is
+only when the harness can hand the cheaper                                                             known will reliably throw away something the
+model a small, purpose-built context instead of                                                        question needed.
+the full transcript, and when the return trip does
+
+
+
+                                                                                                   4
+  D. Sub-Agents Are Meh
+                                                                       III. WHERE TOKENs ACTuALLY GO
+Models parallelize less than one would expect.
+The suspected cause is state management: decid‐           Before redesigning the harness, it helps to know
+
+ing which parts of the parent context to pass in,         which part of a session consumes the budget. The
+
+and which parts of each sub-agent's findings to           breakdown below estimates the share of total
+
+merge back. When that decision is expensive and           processed tokens by subtask in a typical CLI cod‐
+
+error-prone, the model avoids it.                         ing-agent session. It is an input-heavy view, so
+                                                          repeated rereads count each time.
+  E. Restarting Exists
+                                                                                      TABLE III
+Restarting a session is the standard remedy for a                      TOKEN sHARE BY suBTAsK (INPuT-HEAvY vIEW)
+
+transcript that has drifted or become corrupted. It        Subtask                     ~Share      Note
+
+                                                           Reading file contents       30–         Largest bucket; files re‐
+discards the bad state and the good state together.                                    40%         read as context
+
+With addressable state, the alternative is to start        Searching the codebase      10–         grep, glob, listings; noisy
+                                                                                       18%         output
+clean and reload only the old chunks that are still        Command output              10–         Stack traces and logs
+                                                                                       20%         balloon on failure
+relevant, on demand.
+                                                           System prompt, tool         5–12%       Fixed overhead paid on
+                                                           schemas, AGENTS.md                      every turn
+  F. Batteries Are Not Included
+                                                           Conversation replay         amplifi‐    Why everything above is
+                                                                                       er          counted repeatedly
+There is a standing debate over whether agents
+                                                           Reasoning and planning      5–15%       Higher on hard debug‐
+should ship with built-in capabilities. Today it is                                                ging
+
+                                                           Writing and editing code    4–10%       Diffs and str_replace ed‐
+a tradeoff between ease of use, where heavily                                                      its are compact
+
+                                                           Explaining to the user      2–5%        Terse by design in CLI
+batteried agents sit at one extreme, and power-                                                    agents
+
+user tools such as Claude Code and Codex at the
+                                                            The striking row is the one near the bottom.
+other. The tradeoff exists because every battery
+                                                          Writing code, the thing a coding agent exists to
+costs context permanently. Remove that cost and
+                                                          do, is among the smallest line items. Reading and
+the debate dissolves.
+                                                          searching dominate. Independent analysis points
+                                                          the same way: Microsoft's fastcontext project re‐
+                                                          ports that in GPT-5.4 trajectories, reading and
+                                                          searching account for 56.2% of all tool-use turns
+
+
+
+
+                                                      5
+and 46.5% of the main agent's total tokens. If that
+                                                                                                                     B. The Harness as Tool Router
+generalizes, the largest efficiency gain in a cod‐
+                                                                                                                   Instead of exposing every tool schema to the
+ing agent is not a better model or a better diff
+                                                                                                                   model, the harness can sit between intent and in‐
+format. It is smarter retrieval.
+                                                                                                                   vocation. The model describes what it is trying to
+                              midpoint estimates, share of processed tokens
+
+             read files 35%          search 14%      commands 15%
+                                                                                                                   do in plain text. The harness then uses a sequence
+                                                                       sys 8%                   edit 7%
+                                                                                reasoning 10%             3%
+                                                                                                                   of typed Jev calls to select the single best tool, or
+Fig. 3. Retrieval dominates. Reading, searching, and command output to‐                                            the top few candidates, and constructs the argu‐
+gether account for roughly two thirds of processed tokens; writing code is
+under a tenth.
+                                                                                                                   ments. The model never has to hold hundreds of
+                                                                                                                   schemas in context, and a wrong argument type
+    IV. BAsIC LAYER: PERMIssIONs ANd TOOL ROuTING
+                                                                                                                   becomes a validation error rather than a silent
+Two improvements could be integrated into any                                                                      failure.
+existing agent, native or not.
+
+                                                                                                                           V. META-ATTENTION: CONTEXT As A dECIsION
+   A. Programmable Permissions
+
+Every command an agent runs raises the question                                                                    The central proposal removes the idea that con‐
+of whether it should run at all. Claude's auto                                                                     text is static. For every user query the harness
+mode answers this with a classifier. The notes                                                                     asks Jev two things. First, how good the previous
+propose going further: permissions expressed as                                                                    context is: whether reusing the existing KV cache
+programmable queries over what is and is not al‐                                                                   is the right call or whether rebuilding from
+lowed, and deeper inspection where the stakes                                                                      scratch will be cheaper and better. This is framed
+justify it, for instance reading the contents of a                                                                 as an explicit, cost-aware decision rather than a
+Python or shell file before executing it rather                                                                    default. Second, how to construct a new context
+than approving the command name alone.                                                                             that contains everything relevant and nothing
+
+  policy "exec":
+                                                                                                                   else.
+    deny   if command touches ~/.ssh or .env*
+    deny   if script contents contain network
+  egress
+                                                                                                                     In its simplest form this is a noul on every
+           and task.scope != "deploy"
+    ask    if command writes outside repo root                                                                     chunk of context: each tool call input, each tool
+    allow if command in read_only_set
+    allow if tests/ and exit code is expected                                                                      call output, each piece of internal reasoning, and
+
+
+
+
+                                                                                                               6
+possibly each exchange with the user. A later ver‐                                   subtask to a cheaper or faster model no longer re‐
+sion replaces the score with a visibility level.                                     quires the cheap model to load the whole session,
+                                                                                     and the result can be merged back as a scored
+         grep output, 2,400 lines                   SHORT SUMMARY · 12 hits
+
+
+
+           test log, failing run                  LONG SUMMARY · trace + cause
+                                                                                     chunk rather than a transcript the frontier model
+                                       JEV
+
+                                                                                     must reread. Everything stays cost-aware and in‐
+                                    query-aware
+           file: auth/session.ts                      FULL · relevant to query
+
+
+
+          old plan, superseded                            DON'T SHOW
+                                                                                     telligence-aware.
+
+Fig. 4. The visibility ladder. The same chunk can be hidden, summarized
+briefly, summarized at length, or shown in full depending on the current               The same mechanism unblocks sub-agents.
+query. This is query-aware compression, the property compaction lacks.
+                                                                                     The notes' guess is that a large share of sub-agent
+   The payoff is that the idea behind compaction                                     cost today is the work of deciding what context
+survives while its main flaw disappears. Compac‐                                     to pass, compared with a simple instruction of the
+tion compresses once, before knowing the ques‐                                       kind a user would type. If building that context
+tion. The ladder compresses per query, after                                         becomes cheap and automatic, sub-agents can be
+knowing it. A 2,400-line grep result can be                                          used far more often. It also opens a user-facing
+twelve relevant hits for one question and invis‐                                     control: spend more for faster or better results, or
+ible for the next, without ever being deleted from                                   run conservatively and spend as little as possible.
+state.
+                                                                                       A. Extreme Parallelism
+
+   The notes add a visual idea worth noting: if the                                  If spawning a task becomes cheap, many tasks
+harness can heatmap which part of a grep output                                      will run at once, and the harness inherits the
+is relevant, it can filter that output down by any                                   problems of concurrent systems: synchronization
+amount the budget allows. It would also, the                                         primitives, inter-agent communication, and write
+notes observe, look cool.                                                            collisions when several agents share state. The
+                                                                                     notes suggest shared state with locks. Explicit
+          VI. ROuTING ANd suB-AGENTs REvIsITEd
+                                                                                     typing of reads versus writes is what makes that
+
+First-class dynamic contexts are what make rout‐                                     tractable, because read-only tasks never contend.
+
+ing work again. Once the harness can build a
+small, relevant context for a subtask, handing that
+
+
+
+
+                                                                                 7
+  B. Deduplicating Goals                                                                                 TIER 1 · SNIPPETS
+                                                                                        one line per capability · loaded when relevant · 100s of tools
+
+
+
+
+                                                                  cost per turn rises
+For goal-driven loops such as /goal , an open                                                   TIER 2 · SCHEMA ON DEMAND
+                                                                                                     full arguments for the chosen few
+
+
+
+
+question is whether the agent ever repeats work.                                                            TIER 3 · DOCS
+                                                                                                         manual for a one-off query
+
+
+
+
+One mitigation: before spawning any subtask, re‐            Fig. 5. Tiered disclosure. The model sees a cheap map of everything, pays
+                                                            for detail only on what it selects, and drops the detail from context when it
+gister it as a subgoal and deduplicate it against all       is done.
+
+previous subgoals. Work that has already been                  If this works, the batteries debate from Section
+done, or is already in flight, is never launched            II disappears. When a built-in costs almost noth‐
+twice.                                                      ing until it is used, an agent can ship with hun‐
+                                                            dreds of tools and thousands of documentation
+     VII. TOOLs ANd sKILLs FROM FIRsT PRINCIPLEs
+                                                            pages. The notes point out a second benefit: near-
+
+The notes argue for a layer between today's al‐             zero-cost integrations are a strong co-marketing
+
+ways-loaded tools and on-demand skills. A model             channel, and they let things simply work.
+
+cannot propose an action it does not know exists,              A. Better Batteries
+so it needs short snippets describing what is
+                                                            Many community tools promise to help agents
+available, similar to skill descriptions. But those
+                                                            and in practice do not. The notes cite a tool-out‐
+snippets need not live in the system message;
+                                                            put compressor as an example and guess at the
+they can load dynamically when relevant. Behind
+                                                            cause: models do not natively understand these
+them sits the ability to dump the full schema of
+                                                            tools. A native harness can ship first-party
+available actions when needed, similar to a tool-
+                                                            prompts that teach the model how to use each
+search tool. The requirement that ties it together
+                                                            one, effectively a built-in sub-agent or skill per
+is that none of this corrupts the context once it is
+                                                            tool, and its clean context means the tool's cus‐
+no longer needed.
+                                                            tom logic does not poison the rest of the session.
+                                                            There is a marketing angle here too: shipping in‐
+                                                            tegrations for whatever tools are currently popu‐
+                                                            lar keeps the agent in the conversation.
+
+
+
+
+                                                        8
+                                                                                 things to avoid. A request for code should pull in
+                  VIII. CONdITIONAL INsTRuCTIONs                                 a style guide and a note not to add a million as‐
+                                                                                 sertions.
+AGENTS.md files load in full today. The notes
+propose loading sections conditionally. Working                                    A. Structured Skills
+
+on front-end code loads the style guide. Working                                 Depending on how programmable the harness
+inside a particular subdirectory loads that direct‐                              becomes, skills could carry behavioral changes,
+ory's footguns file, and the notes suggest every                                 not just instructions, similar to Claude Code's
+subdirectory should have one.                                                    skill hooks but more powerful. One limitation the
+
+                               CURRENT TASK
+                                                                                 notes flag in current hook systems is that once
+                                                                                 added, a hook stays in the session permanently.
+            touches *.tsx ?     inside billing/ ?      writing prose ?
+
+
+                                                                                 Structured skills would attach and detach behavi‐
+            style-guide.md    billing/GOTCHAS.md    voice samples + don'ts
+
+                                                                                 or with the condition that triggered them.
+Fig. 6. Conditional AGENTS.md. Instructions attach to conditions rather
+than to the session, and a conditional fragment is pinned so compaction            B. Recursive Language Models
+cannot summarize it away.
+
+                                                                                 A related direction is the recursive language
+   This resembles skills, but the notes draw a dis‐
+                                                                                 model approach, which treats more of the agent's
+tinction. Skills tend to mean do this now. Condi‐
+                                                                                 state as explicit variables rather than transcript
+tional instructions mean keep this in memory
+                                                                                 text. A world where state is held in named vari‐
+somewhere. The second kind also needs a prop‐
+                                                                                 ables could be considerably cleaner than one
+erty skills lack: immunity to compaction. A skill
+                                                                                 where state is whatever happens to remain in the
+loaded early in a long session will eventually be
+                                                                                 context window.
+compacted or summarized out. A condition-
+bound instruction is reloaded whenever its condi‐
+                                                                                              IX. sECuRITY-AWARE ROuTING
+tion holds.
+                                                                                 Routing today is framed around difficulty and
+   The notes observe the same need in ordinary
+                                                                                 cost. The notes add a third axis: trust. Some
+chat. A request for a summary should pull in a
+                                                                                 open-weight models served through low-cost
+preferred format. A request for writing in one's
+                                                                                 providers are dramatically cheaper than frontier
+own style should pull in samples and a list of
+
+
+
+
+                                                                             9
+APIs, and the notes raise the concern that data                           the background; an ELI5 skill that explains a sys‐
+passing through some of those endpoints may not                           tem with a few big pictures and very few words;
+stay private. The proposal is to give each subtask                        and the habit of having an agent maintain a small
+an estimate of which kinds of files it is likely to                       deployed progress page, with screenshots and
+touch, attach policies to file types, and route sub‐                      notes, that can be checked from a phone during a
+tasks accordingly.                                                        long run. A related production pattern mirrors
+
+                             TABLE Iv                                     live traffic to a candidate model and generates
+                      ROuTING BY dATA sENsITIvITY
+                                                                          evals automatically for roughly a day before any
+ Files likely touched            Policy       Eligible models
+
+ Public docs, open-source        open         any, cheapest first         switch is made.
+ deps
+
+ Application code                standard     vetted providers               What these share is that they run in the back‐
+ Secrets, env, infra config      restric‐     first-party frontier
+                                 ted          only                        ground, as extensions to the normal coding work‐
+ Proprietary research code       custom       excludes named              flow, and they are read-only functions of the cur‐
+                                              vendors
+                                                                          rent codebase state. Cross-model review, such as
+  The last row reflects a broader point in the
+                                                                          having one vendor's agent review another's work,
+notes: difficulty and cost are not the only reasons
+                                                                          fits the same mold.
+to route. A team might avoid one vendor's models
+                                                                                                                                                        cross-model review
+
+for its own model research, or avoid certain pro‐                                    MAIN AGENT
+                                                                                            writes
+                                                                                                                                                     background eval generation
+
+
+viders for safety-sensitive work. Once routing is                                                                                                     ELI5 explainer · quizzes
+
+                                                                                  SHARED RETRIEVAL
+
+policy-driven, those preferences become config‐                                     relevant files, symbols,
+                                                                                       diffs, found once
+                                                                                                                                                         live progress page
+
+
+                                                                                                                                                      micro-world simulations
+
+
+uration rather than discipline.                                                                                read-only · never contend for locks
+
+
+
+
+                                                                          Fig. 7. Background processing on explicit state. The expensive work of
+                                                                          finding what is relevant to a change is done once and shared by every
+                                                                          read-only background task.
+                 X. BACKGROuNd PROCEssING
+                                                                             This is where the Jev thesis pays off. A Jev-
+The notes identify an emerging pattern across
+                                                                          centric harness has to be precise about what is in
+several popular agent workflows: building
+                                                                          context and whether each operation reads or
+HTML pages that update in parallel as work pro‐
+                                                                          writes. Finding the information relevant to a code
+ceeds; the argument that understanding, not gen‐
+                                                                          change is non-trivial work. If that retrieval is
+eration, is the new bottleneck; generating evals in
+                                                                          shared across all background tasks rather than re‐
+
+
+
+                                                                     10
+peated by each one, running them becomes much                                    age is. The leverage is in what the harness puts in
+cheaper, and it becomes economical to run many                                   front of the model on every turn, and today that
+more of them. Given Section III's finding that re‐                               decision is made by default, by an append-only
+trieval dominates the token budget, sharing it is                                transcript shaped around KV cache economics.
+the largest single saving available. Being explicit
+                                                                                   Take the cache away as a thought experiment
+about reads versus writes, in the notes' words,
+                                                                                 and six familiar behaviors look different. Routing
+should eventually give the agent superpowers.
+                                                                                 fails because context is reprocessed, not because
+                                                                                 cheap models are weak. Tools crowd the window
+               XI. THE BATTERIEs sHORTLIsT
+                                                                                 because they must be declared up front. Compac‐
+The notes close with open-source projects that                                   tion loses information because it compresses be‐
+could be integrated natively, each with a design                                 fore the question is known. Sub-agents are rare
+note on how a Jev-centric harness would use it.                                  because passing state is hard. Restarts throw
+                               TABLE v                                           away good state with bad. And the batteries de‐
+                         CANdIdATE BuILT-IN TOOLs
+                                                                                 bate exists only because every built-in costs con‐
+ Project    Role                  Native angle
+
+ head‐      context com‐          classifier checks the compression              text forever.
+ room       pressor               kept the needed facts
+
+ rtk        tool-output           first-party prompts so the model                 The proposed harness addresses all six with
+            compressor            understands it
+
+ ast-       structural            load manual once, generate N quer‐             one move: make state explicit and typed, and let
+ grep       search                ies, filter by relevance
+
+ ast-out‐   structural out‐       hierarchical calling: pick the sub‐
+                                                                                 Jev decide context, routing, tools, and permis‐
+ line       line                  tree to inspect
+                                                                                 sions per query. Chunks are scored on a visibility
+ fast‐      repo-explora‐         route to it, or replace its search with
+ context    tion sub-agent        structure                                      ladder. Routing is priced per context rebuild.
+ fff        path and con‐         in-memory index, frequency-
+            tent search           ranked, faster than ripgrep in long            Tools are disclosed in tiers. Instructions attach to
+                                  sessions
+                                                                                 conditions. Background tasks share one retrieval
+                                                                                 pass. None of this requires a better model. It re‐
+                          XII. CONCLusION
+                                                                                 quires treating the context window as something
+The design notes make an argument that is easy                                   assembled on purpose rather than something that
+to state and hard to act on. Coding agents are                                   accumulates by accident.
+simple loops, and the loop is not where the lever‐
+
+
+
+
+                                                                            11
+                                 sOuRCEs
+
+Independent synthesis for study, not affiliated with or endorsed by
+TypeSafe. Jev is described from TypeSafe materials as a decision model
+returning typed choices, scores, and noul decisions with probabilities.
+Core arguments, routing arithmetic, the six symptoms, and the proposed
+features are from design notes by Diogo Almeida, founder of TypeSafe,
+as provided to the compiler. Reading and searching share figures
+(56.2% of tool-use turns, 46.5% of main-agent tokens in GPT-5.4 tra‐
+jectories) are as reported by Microsoft's fastcontext project. The token-
+share table is an illustrative estimate of CLI coding-agent sessions. Re‐
+cursive language models: A. Zhang, 2025. Tool references: headroom,
+rtk, ast-grep, ast-outline, fastcontext, fff (GitHub). Model list prices are
+as used in the notes and may have changed. All diagrams are original.
+
+
+
+Independent synthesis for study. Not a publication of, and not affiliated with or endorsed by, TypeSafe, Anthropic, OpenAI, Microsoft, or any project mentioned. Cost
+figures are illustrative and based on list prices cited in the source notes. All diagrams are original.
+
+
+
+
+                                                                                12
+

@@ -1,0 +1,9 @@
+Translation and figures: CC BY 4.0 (this translation)
+Original document: "Jev Engineering for Coding Agents" — independently compiled
+from design notes by Diogo Almeida (TypeSafe). The compiler states the document
+is not affiliated with or endorsed by TypeSafe.
+
+This repository redistributes the original PDF alongside a Chinese translation
+for study purposes. All original arguments, routing arithmetic, and the proposed
+architecture originate from the design notes described in the document's own
+"Sources" section.
