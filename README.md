@@ -7,6 +7,13 @@
 >
 > 本文是 [原文 PDF](assets/original.pdf) 的完整中文翻译，保留原有结构与全部七张插图。
 
+> **本仓库现在有两份文档**
+>
+> - 本页（根目录）：第三方根据笔记**汇编整理**的工作笔记——结构正式、有图表、「六个症状」已表格化
+> - [`source-notes/`](source-notes/)：作者的**原始设计笔记**——保留了原始项目符号结构、随手记的链接，以及尚未定型的口语化表达
+>
+> 两份对照读，能看到从笔记到成文的加工过程。原始笔记里有汇编版没有的内容（如 SLOP 子任务拆解、附录 2 引用的原始推文、以及作者的推理过程）。
+
 ---
 
 ![图 1：Jev harness](figures/fig1.png)
@@ -408,3 +415,4 @@ token 份额表是对 CLI coding agent 会话的示意性估计。递归语言�
 - 原文纯文本：[assets/original-text.txt](assets/original-text.txt)
 - 插图：从原 PDF 的矢量图表按 300 DPI 精确裁切，共 7 张，位于 `figures/`
 - 翻译保留原章节编号与结构；英文原文的排版错误（如小标题的大小写异常 `sIX sYMPTOMs OF THE Kv CACHE`）在译文中已按正常书写呈现
+- **上游原始笔记**：[source-notes/](source-notes/)（本文档所依据的设计笔记，及其中文翻译）
